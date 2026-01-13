@@ -1,0 +1,351 @@
+!pip install healpy
+import healpy as hp
+import numpy as np
+import matplotlib.pyplot as plt
+
+data = np.load('/content/drive/MyDrive/HM_LOAD_DATA.npz')
+
+ellb_o = data['ell']
+EE_100_raw_b = data['EE_100_cross_s']
+EE_143_raw_b = data['EE_143_cross_s']
+EE_217_raw_b = data['EE_217_cross_s']
+
+W = 11
+half = W//2
+ELL_MIN = 30
+ELL_MAX = 1500
+
+use = (ellb_o >= ELL_MIN) & (ellb_o <= ELL_MAX)
+
+ellb = ellb_o[use]
+D100 = EE_100_raw_b[use].astype(np.float64)
+D143 = EE_143_raw_b[use].astype(np.float64)
+D217 = EE_217_raw_b[use].astype(np.float64)
+
+for arr in (D100, D143, D217):
+  arr[~np.isfinite(arr)] = 0.0
+  arr[arr < 0] = 0.0
+
+x0 = np.stack([np.log1p(D100), np.log1p(D143), np.log1p(D217)], axis = 1)
+
+samples = []
+ell_centers = []
+
+for i in range(half, len(ellb) - half):
+  window = x0[i-half : i+half+1, :]
+  samples.append(window.reshape(-1))
+  ell_centers.append(ellb[i])
+
+X = np.array(samples, dtype = np.float32)
+ell_centers = np.array(ell_centers, dtype=np.float32)
+
+ELL_TRAIN_MAX = 900
+ELL_VAL_MAX = 1200
+
+train_mask = ell_centers <= ELL_TRAIN_MAX
+val_mask = (ell_centers > ELL_TRAIN_MAX) &  (ell_centers <= ELL_VAL_MAX)
+test_mask = ell_centers > ELL_VAL_MAX
+
+X_train = X[train_mask]
+X_val = X[val_mask]
+X_test = X[test_mask]
+
+mu = X_train.mean(axis = 0, keepdims=True)
+sigma = X_train.std(axis=0, keepdims= True)
+sigma = np.where(sigma ==0, 1.0, sigma)
+
+X_train = (X_train - mu) / sigma
+X_val = (X_val - mu) / sigma
+X_test = (X_test - mu) / sigma
+
+print("X_train:", X_train.shape)
+print("X_val:  ", X_val.shape)
+print("X_test: ", X_test.shape)
+print("Features per sample:", X_train.shape[1])
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
+import os, random
+import numpy as np
+import torch
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
+
+Xtr = torch.tensor(X_train, dtype=torch.float32)
+Xva = torch.tensor(X_val,   dtype=torch.float32)
+
+
+train_loader = DataLoader(TensorDataset(Xtr), batch_size=256, shuffle=True)
+val_loader   = DataLoader(TensorDataset(Xva), batch_size=256, shuffle=False)
+
+
+def corrupt(x, noise_std=0.10, drop_prob=0.05, channel_drop_prob=0.10, W=11):
+    """
+    x: tensor of shape (B, 3*W)
+    Adds noise + random feature dropout + optional whole-channel dropout.
+    """
+    x_noisy = x.clone()
+
+
+    x_noisy = x_noisy + noise_std * torch.randn_like(x_noisy)
+
+    if drop_prob > 0:
+        mask = (torch.rand_like(x_noisy) > drop_prob).float()
+        x_noisy = x_noisy * mask
+
+
+    if channel_drop_prob > 0:
+        B, F = x_noisy.shape
+        ch = torch.randint(0, 3, (B,), device=x_noisy.device)
+        do_drop = (torch.rand(B, device=x_noisy.device) < channel_drop_prob)
+
+        channel_mask = torch.ones_like(x_noisy)
+        for i in range(B):
+            if do_drop[i]:
+                channel_mask[i, ch[i]::3] = 0.0  # zero every 3rd feature starting at ch
+        x_noisy = x_noisy * channel_mask
+
+    return x_noisy
+
+class DenoiseAE(nn.Module):
+    def __init__(self, in_dim):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(in_dim, 24),
+            nn.ReLU(),
+            nn.Linear(24, 8),
+            nn.ReLU(),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(8, 24),
+            nn.ReLU(),
+            nn.Linear(24, in_dim),
+        )
+
+    def forward(self, x):
+        z = self.encoder(x)
+        out = self.decoder(z)
+        return out
+
+in_dim = X_train.shape[1]
+model = DenoiseAE(in_dim).to(device)
+
+loss_fn = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+
+EPOCHS = 2000
+best_val = float("inf")
+best_state = None
+
+for epoch in range(1, EPOCHS + 1):
+    model.train()
+    train_loss = 0.0
+    n_train = 0
+
+    for (xb,) in train_loader:
+        xb = xb.to(device)
+        xb_corrupt = corrupt(xb)
+
+        pred = model(xb_corrupt)
+        loss = loss_fn(pred, xb)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        train_loss += loss.item() * xb.size(0)
+        n_train += xb.size(0)
+
+    train_loss /= n_train
+
+    model.eval()
+    val_loss = 0.0
+    n_val = 0
+
+    with torch.no_grad():
+        for (xb,) in val_loader:
+            xb = xb.to(device)
+            xb_corrupt = corrupt(xb)  # corruption also on val to measure denoising ability
+            pred = model(xb_corrupt)
+            loss = loss_fn(pred, xb)
+
+            val_loss += loss.item() * xb.size(0)
+            n_val += xb.size(0)
+
+    val_loss /= n_val
+
+    if val_loss < best_val:
+        best_val = val_loss
+        best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+    if epoch == 1 or epoch % 10 == 0:
+        print(f"Epoch {epoch:3d} | train_loss={train_loss:.6f} | val_loss={val_loss:.6f} | best_val={best_val:.6f}")
+
+model.load_state_dict(best_state)
+model.eval()
+print("Training done. Best val loss:", best_val)
+
+
+
+W = 11
+half = W // 2
+ELL_MIN = 30
+ELL_MAX = 1500
+
+use = (ellb >= ELL_MIN) & (ellb <= ELL_MAX)
+
+ell = ellb[use]
+D100 = EE_100_raw_b[use].astype(np.float64)
+D143 = EE_143_raw_b[use].astype(np.float64)
+D217 = EE_217_raw_b[use].astype(np.float64)
+
+print("D100==D143?", np.allclose(D100, D143))
+print("D100==D217?", np.allclose(D100, D217))
+print("D143==D217?", np.allclose(D143, D217))
+
+for arr in (D100, D143, D217):
+    arr[~np.isfinite(arr)] = 0.0
+    arr[arr < 0] = 0.0
+
+X0 = np.stack([np.log1p(D100), np.log1p(D143), np.log1p(D217)], axis=1) 
+
+
+samples = []
+center_indices = []
+
+for i in range(half, len(ell) - half):
+    window = X0[i-half : i+half+1, :]     
+    samples.append(window.reshape(-1))      
+    center_indices.append(i)
+
+X = np.array(samples, dtype=np.float32)    
+
+
+Xn = (X - mu.astype(np.float32)) / sigma.astype(np.float32)
+
+
+device = next(model.parameters()).device
+Xt = torch.tensor(Xn, dtype=torch.float32, device=device)
+
+with torch.no_grad():
+    Yt = model(Xt)                 
+
+Y = Yt.detach().cpu().numpy().astype(np.float32)
+
+
+Y = Y * sigma.astype(np.float32) + mu.astype(np.float32)  
+
+
+B = len(ell)
+accum = np.zeros((B, 3), dtype=np.float64)
+count = np.zeros((B, 3), dtype=np.float64)
+
+for row, i_center in enumerate(center_indices):
+    window_pred = Y[row].reshape(W, 3) 
+    i0 = i_center - half
+    i1 = i_center + half + 1
+
+    accum[i0:i1, :] += window_pred
+    count[i0:i1, :] += 1.0
+
+
+count[count == 0] = 1.0
+X0_denoised = accum / count    
+
+
+D100_d = np.expm1(X0_denoised[:, 0])
+D143_d = np.expm1(X0_denoised[:, 1])
+D217_d = np.expm1(X0_denoised[:, 2])
+
+EE_100_denoised_b = EE_100_raw_b.astype(np.float64).copy()
+EE_143_denoised_b = EE_143_raw_b.astype(np.float64).copy()
+EE_217_denoised_b = EE_217_raw_b.astype(np.float64).copy()
+
+EE_100_denoised_b[use] = D100_d
+EE_143_denoised_b[use] = D143_d
+EE_217_denoised_b[use] = D217_d
+
+print("Done.")
+print("Shapes:", EE_100_denoised_b.shape, EE_143_denoised_b.shape, EE_217_denoised_b.shape)
+print("Range check (ell):", ellb[use][0], "to", ellb[use][-1])
+
+import matplotlib.pyplot as plt
+
+ELL_MIN = 30
+ELL_MAX = 1200  
+use = (ellb >= ELL_MIN) & (ellb <= ELL_MAX)
+
+X_raw = np.vstack([
+    EE_100_raw_b[use],
+    EE_143_raw_b[use],
+    EE_217_raw_b[use],
+]).T
+
+X_den = np.vstack([
+    EE_100_denoised_b[use],
+    EE_143_denoised_b[use],
+    EE_217_denoised_b[use],
+]).T
+
+
+def ilc_weights(X):
+    """
+    X: (N, C) matrix of C channels over N ell-bins.
+    Returns weights w (C,) minimizing variance with constraint sum(w)=1.
+    """
+
+    R = np.cov(X, rowvar=False)
+
+
+    eps = 1e-12 * np.trace(R) / R.shape[0]
+    R = R + eps * np.eye(R.shape[0])
+
+
+    one = np.ones((R.shape[0], 1))
+    Rinv = np.linalg.inv(R)
+    numer = Rinv @ one
+    denom = (one.T @ Rinv @ one).item()
+    w = (numer / denom).flatten()
+    return w, R
+
+
+w_raw, R_raw = ilc_weights(X_raw)
+w_den, R_den = ilc_weights(X_den)
+
+print("ILC weights (raw)     [100,143,217]:", w_raw, "sum=", w_raw.sum())
+print("ILC weights (denoised)[100,143,217]:", w_den, "sum=", w_den.sum())
+
+
+EE_ILC_raw = X_raw @ w_raw
+EE_ILC_den = X_den @ w_den
+
+
+def rms(a):
+    a = np.asarray(a)
+    return np.sqrt(np.mean(a*a))
+
+
+plt.figure()
+plt.plot(ellb[use], EE_ILC_raw, label="ILC (raw)")
+plt.plot(ellb[use], EE_ILC_den, label="ILC (AI-denoised)")
+
+plt.yscale("log")
+plt.xlabel("ℓ")
+plt.ylabel("EE (binned)")
+plt.title(f"ILC comparison ({ELL_MIN} ≤ ℓ ≤ {ELL_MAX})")
+plt.legend()
+plt.show()
+
+plt.figure()
+plt.plot(ellb[use], EE_ILC_raw, label="ILC (raw)")
+plt.plot(ellb[use], EE_ILC_den, label="ILC (AI-denoised)")
+plt.yscale("linear")
+plt.xlabel("ℓ")
+plt.ylabel("EE (binned)")
+plt.title(f"ILC comparison (linear scale, {ELL_MIN} ≤ ℓ ≤ {ELL_MAX})")
+plt.legend()
+plt.show()
