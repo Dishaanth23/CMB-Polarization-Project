@@ -1,0 +1,271 @@
+# This program gets the original power spectra from  raw maps from frequency channels 100, 143, 217 GHz
+
+
+!pip install healpy
+import healpy as hp
+import numpy as np
+import matplotlib.pyplot as plt
+
+#All files:-
+
+raw_fits_100 = "/content/drive/MyDrive/ISEF_PROJECT_FILES/SKY_MAPS/HFI_SkyMap_100_2048_R3.01_full.fits"
+raw_fits_143 = "/content/drive/MyDrive/ISEF_PROJECT_FILES/SKY_MAPS/HFI_SkyMap_143_2048_R3.01_full.fits"
+raw_fits_217 = "/content/drive/MyDrive/ISEF_PROJECT_FILES/SKY_MAPS/HFI_SkyMap_217_2048_R3.01_full.fits"
+clean_fits_100 = "/content/drive/MyDrive/ISEF_PROJECT_FILES/CLEANED_MAPS/COM_CMB_IQU-100-fgsub-sevem_2048_R3.00_full.fits"
+clean_fits_143 = "/content/drive/MyDrive/ISEF_PROJECT_FILES/CLEANED_MAPS/COM_CMB_IQU-143-fgsub-sevem_2048_R3.00_full.fits"
+clean_fits_217 = "/content/drive/MyDrive/ISEF_PROJECT_FILES/CLEANED_MAPS/COM_CMB_IQU-217-fgsub-sevem_2048_R3.00_full.fits"
+
+fits_mask = "/content/drive/MyDrive/ISEF_PROJECT_FILES/COM_Mask_CMB-common-Mask-Pol_2048_R3.00.fits"
+fits_SMICA = "/content/drive/MyDrive/ISEF_PROJECT_FILES/PLANK_MAPS/COM_CMB_IQU-smica_2048_R3.00_full.fits"
+
+#Parameters-
+
+NSIDE_TARGET = 1024
+common_FWHM_arcmin = 10.0
+ELL_MIN, DELTA_L = 30, 5
+ELL_MAX = 1500
+
+
+
+def load_qu(file, target_nside = NSIDE_TARGET, fwhm_arcmin = common_FWHM_arcmin):
+  Q = hp.read_map(file, field=1, dtype=np.float64)
+  U = hp.read_map(file, field=2, dtype=np.float64)
+
+  if hp.get_nside(Q) != target_nside:
+    Q = hp.ud_grade(Q, nside_out = target_nside, order_in = 'RING', order_out='RING', power = 0)
+    U = hp.ud_grade(U, nside_out = target_nside, order_in = 'RING', order_out='RING', power = 0)
+
+  fwhm_rad = np.deg2rad(fwhm_arcmin / 60.0)
+  I0 = np.zeros_like(Q)
+  I, Q, U = hp.smoothing([I0, Q, U], fwhm=fwhm_rad, pol = True)
+
+  return Q, U
+
+def read_mask(file, nside_target = NSIDE_TARGET, field = 0, hard = False):
+  mask = hp.read_map(file, field=field, dtype=float)
+  mask = np.nan_to_num(mask, nan= 0.0)
+  mask = np.clip(mask, 0.0, 1.0)
+  nside_in = hp.get_nside(mask)
+  if hard:
+    mask = (mask > 0.5).astype(float)
+  mask = hp.ud_grade(mask, nside_out=nside_target, order_in = 'RING', order_out = 'RING', power = 0)
+  return mask.astype(np.float32)
+
+def bin_spectrum(ell, y, ell_min = ELL_MIN, ell_max = ELL_MAX, d_ell = DELTA_L):
+  ell = np.asarray(ell)
+  y = np.asarray(y)
+  sel = (ell >= ell_min) & (ell <= ell_max)
+  L, Y = ell[sel], y[sel]
+  edges = np.arange(ell_min, ell_max + d_ell, d_ell)
+  centers, vals = [], []
+  for a, b in zip(edges[:-1], edges[1:]):
+    m = (L >= a) & (L < b)
+    if not np.any(m):
+      continue
+    Li, Yi = L[m], Y[m]
+    w = 2*Li + 1
+    centers.append(0.5*(a + (b)))
+    vals.append(np.sum(w*Yi)/np.sum(w))
+  return np.array(centers), np.array(vals)
+
+
+Q100_raw, U100_raw = load_qu(raw_fits_100)
+Q143_raw, U143_raw = load_qu(raw_fits_143)
+Q217_raw, U217_raw = load_qu(raw_fits_217)
+
+Q100_clean, U100_clean = load_qu(clean_fits_100)
+Q143_clean, U143_clean = load_qu(clean_fits_143)
+Q217_clean, U217_clean = load_qu(clean_fits_217)
+
+mask = read_mask(fits_mask)
+QSMICA, USMICA = load_qu(fits_SMICA)
+
+
+#Apply mask
+
+Q100m_raw, U100m_raw = Q100_raw * mask, U100_raw * mask
+Q143m_raw, U143m_raw = Q143_raw * mask, U143_raw * mask
+Q217m_raw, U217m_raw = Q217_raw * mask, U217_raw * mask
+
+Q100m_clean, U100m_clean = Q100_clean * mask, U100_clean * mask
+Q143m_clean, U143m_clean = Q143_clean * mask, U143_clean * mask
+Q217m_clean, U217m_clean = Q217_clean * mask, U217_clean * mask
+
+QSMICAm, USMICAm = QSMICA * mask, USMICA * mask
+
+
+# Get EE for all
+
+lmax = 3*hp.get_nside(Q143m_raw) - 1
+I0 = np.zeros_like(Q143m_raw)
+
+cls_100_raw = hp.anafast(
+    [I0, Q100m_raw, U100m_raw],
+    lmax = lmax,
+    pol = True
+)
+cls_143_raw = hp.anafast(
+    [I0, Q143m_raw, U217m_raw],
+    lmax = lmax,
+    pol = True
+)
+cls_217_raw = hp.anafast(
+    [I0, Q217m_raw, U217m_raw],
+    lmax = lmax,
+    pol = True
+)
+cls_100_clean = hp.anafast(
+    [I0, Q100m_clean, U100m_clean],
+    lmax = lmax,
+    pol = True
+)
+cls_143_clean = hp.anafast(
+    [I0, Q143m_clean, U143m_clean],
+    lmax = lmax,
+    pol = True
+)
+cls_217_clean = hp.anafast(
+    [I0, Q217m_clean, U217m_clean],
+    lmax = lmax,
+    pol = True
+)
+cls_SMICA = hp.anafast(
+    [I0, QSMICAm, USMICAm],
+    lmax = lmax,
+    pol = True
+)
+
+EE_100_raw = cls_100_raw[1]
+EE_143_raw = cls_143_raw[1]
+EE_217_raw = cls_217_raw[1]
+EE_100_clean = cls_100_clean[1]
+EE_143_clean = cls_143_clean[1]
+EE_217_clean = cls_217_clean[1]
+EE_SMICA = cls_SMICA[1]
+
+ell = np.arange(EE_143_raw.size)
+
+#bin spectrum
+
+ellb, EE_100_raw_b = bin_spectrum(
+    ell,
+    EE_100_raw,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell = DELTA_L
+)
+
+ellb, EE_143_raw_b = bin_spectrum(
+    ell,
+    EE_143_raw,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell = DELTA_L
+)
+
+ellb, EE_217_raw_b = bin_spectrum(
+    ell,
+    EE_217_raw,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell = DELTA_L
+)
+
+ellb, EE_100_clean_b = bin_spectrum(
+    ell,
+    EE_100_clean,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell = DELTA_L
+)
+
+ellb, EE_143_clean_b = bin_spectrum(
+    ell,
+    EE_143_clean,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell = DELTA_L
+)
+
+ellb, EE_217_clean_b = bin_spectrum(
+    ell,
+    EE_217_clean,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell = DELTA_L
+)
+
+ellb, EE_SMICA_b = bin_spectrum(
+    ell,
+    EE_SMICA,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell = DELTA_L
+)
+
+#Compute Crosses
+
+cls_100x143 = hp.anafast(
+    [I0, Q100m_raw, U100m_raw],
+    [I0, Q143m_raw, U143m_raw],
+    lmax=lmax,
+    pol = True
+)
+cls_100x217 = hp.anafast(
+    [I0, Q100m_raw, U100m_raw],
+    [I0, Q217m_raw, U217m_raw],
+    lmax=lmax,
+    pol = True
+)
+cls_143x217 = hp.anafast(
+    [I0, Q143m_raw, U143m_raw],
+    [I0, Q217m_raw, U217m_raw],
+    lmax=lmax,
+    pol = True
+)
+
+EE_100x143 = cls_100x143[1]
+EE_100x217 = cls_100x217[1]
+EE_143x217 = cls_143x217[1]
+
+ell_temp = np.arange(EE_100x143.size)
+
+ellb_temp, EE_100x143_b = bin_spectrum(
+    ell_temp,
+    EE_100x143,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell=DELTA_L
+    )
+ellb_temp, EE_100x217_b = bin_spectrum(
+    ell_temp,
+    EE_100x217,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell=DELTA_L
+    )
+ellb_temp, EE_143x217_b = bin_spectrum(
+    ell_temp,
+    EE_143x217,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_el
+
+
+from google.colab import drive
+drive.mount("/content/drive")
+
+np.savez(
+    "(My drive Path)",
+    ell=ellb,
+    EE_100_s=EE_100_raw_b,
+    EE_143_s=EE_143_raw_b,
+    EE_217_s=EE_217_raw_b,
+    EE_100_c_s=EE_100_clean_b,
+    EE_143_c_s=EE_143_clean_b,
+    EE_217_c_s=EE_217_clean_b,
+    EE_SMICA_s=EE_SMICA_b,
+    EE_100x143_s=EE_100x143_b,
+    EE_100x217_s=EE_100x217_b,
+    EE_143_217_s=EE_143x217_b
+)
