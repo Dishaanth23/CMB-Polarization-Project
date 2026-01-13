@@ -1,0 +1,147 @@
+# Compute power spectra for Half-Mission maps
+
+!pip install healpy
+import numpy as np
+import healpy as hp
+import matplotlib.pyplot as plt
+
+fits_100_HM1 = '/content/drive/MyDrive/ISEF Project Files/HFI_SkyMap_100_2048_R3.01_halfmission-1.fits'
+fits_100_HM2 = '/content/drive/MyDrive/ISEF Project Files/HFI_SkyMap_100_2048_R3.01_halfmission-2.fits'
+fits_143_HM1 = '/content/drive/MyDrive/ISEF Project Files/HFI_SkyMap_143_2048_R3.01_halfmission-1.fits'
+fits_143_HM2 = '/content/drive/MyDrive/ISEF Project Files/HFI_SkyMap_143_2048_R3.01_halfmission-2.fits'
+fits_217_HM1 = '/content/drive/MyDrive/ISEF Project Files/HFI_SkyMap_217_2048_R3.01_halfmission-1.fits'
+fits_217_HM2 = '/content/drive/MyDrive/ISEF Project Files/HFI_SkyMap_217_2048_R3.01_halfmission-2.fits'
+
+fits_mask = '/content/drive/MyDrive/ISEF Project Files/COM_Mask_CMB-common-Mask-Int_2048_R3.00.fits'
+
+#Parameters-
+
+NSIDE_TARGET = 1024
+common_FWHM_arcmin = 10.0
+ELL_MIN, DELTA_L = 30, 5
+ELL_MAX = 1500
+
+
+
+def load_qu(file, target_nside = NSIDE_TARGET, fwhm_arcmin = common_FWHM_arcmin):
+  Q = hp.read_map(file, field=1, dtype=np.float64)
+  U = hp.read_map(file, field=2, dtype=np.float64)
+
+  if hp.get_nside(Q) != target_nside:
+    Q = hp.ud_grade(Q, nside_out = target_nside, order_in = 'RING', order_out='RING', power = 0)
+    U = hp.ud_grade(U, nside_out = target_nside, order_in = 'RING', order_out='RING', power = 0)
+
+  fwhm_rad = np.deg2rad(fwhm_arcmin / 60.0)
+  I0 = np.zeros_like(Q)
+  I, Q, U = hp.smoothing([I0, Q, U], fwhm=fwhm_rad, pol = True)
+
+  return Q, U
+
+def read_mask(file, nside_target = NSIDE_TARGET, field = 0, hard = False):
+  mask = hp.read_map(file, field=field, dtype=float)
+  mask = np.nan_to_num(mask, nan= 0.0)
+  mask = np.clip(mask, 0.0, 1.0)
+  nside_in = hp.get_nside(mask)
+  if hard:
+    mask = (mask > 0.5).astype(float)
+  mask = hp.ud_grade(mask, nside_out=nside_target, order_in = 'RING', order_out = 'RING', power = 0)
+  return mask.astype(np.float32)
+
+def bin_spectrum(ell, y, ell_min = ELL_MIN, ell_max = ELL_MAX, d_ell = DELTA_L):
+  ell = np.asarray(ell)
+  y = np.asarray(y)
+  sel = (ell >= ell_min) & (ell <= ell_max)
+  L, Y = ell[sel], y[sel]
+  edges = np.arange(ell_min, ell_max + d_ell, d_ell)
+  centers, vals = [], []
+  for a, b in zip(edges[:-1], edges[1:]):
+    m = (L >= a) & (L < b)
+    if not np.any(m):
+      continue
+    Li, Yi = L[m], Y[m]
+    w = 2*Li + 1
+    centers.append(0.5*(a + (b)))
+    vals.append(np.sum(w*Yi)/np.sum(w))
+  return np.array(centers), np.array(vals)
+
+Q100_1, U100_1 = load_qu(fits_100_HM1)
+Q100_2, U100_2 = load_qu(fits_100_HM2)
+Q143_1, U143_1 = load_qu(fits_143_HM1)
+Q143_2, U143_2 = load_qu(fits_143_HM2)
+Q217_1, U217_1 = load_qu(fits_217_HM1)
+Q217_2, U217_2 = load_qu(fits_217_HM2)
+
+mask = read_mask(fits_mask)
+
+Q100m_1m, U100m_1m = Q100_1 * mask, U100_1 * mask
+Q100m_2m, U100m_2m = Q100_2 * mask, U100_2 * mask
+Q143m_1m, U143m_1m = Q143_1 * mask, U143_1 * mask
+Q143m_2m, U143m_2m = Q143_2 * mask, U143_2 * mask
+Q217m_1m, U217m_1m = Q217_1 * mask, U217_1 * mask
+Q217m_2m, U217m_2m = Q217_2 * mask, U217_2 * mask
+
+lmax = 3*hp.get_nside(Q143m_1m) - 1
+I0 = np.zeros_like(Q143m_1m)
+
+cls_100_raw = hp.anafast(
+    [I0, Q100m_1m, U100m_1m],
+    [I0, Q100m_2m, U100m_2m],
+    pol=True,
+    lmax=ELL_MAX
+)
+cls_143_raw = hp.anafast(
+    [I0, Q143m_1m, U143m_1m],
+    [I0, Q143m_2m, U143m_2m],
+    pol=True,
+    lmax=ELL_MAX
+)
+cls_217_raw = hp.anafast(
+    [I0, Q217m_1m, U217m_1m],
+    [I0, Q217m_2m, U217m_2m],
+    pol=True,
+    lmax=ELL_MAX
+)
+
+
+EE_100_raw_cross = cls_100_raw[1]
+EE_143_raw_cross = cls_143_raw[1]
+EE_217_raw_cross = cls_217_raw[1]
+ell = np.arange(EE_143_raw_cross.size)
+
+#bin spectrum
+
+ellb, EE_100_raw_cross_b = bin_spectrum(
+    ell,
+    EE_100_raw_cross,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell = DELTA_L
+)
+
+ellb, EE_143_raw_cross_b = bin_spectrum(
+    ell,
+    EE_143_raw_cross,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell = DELTA_L
+)
+
+ellb, EE_217_raw_cross_b = bin_spectrum(
+    ell,
+    EE_217_raw_cross,
+    ell_min=ELL_MIN,
+    ell_max = ELL_MAX,
+    d_ell = DELTA_L
+)
+
+
+from google.colab import drive
+drive.mount("/content/drive")
+
+np.savez(
+    "(Drive Path)",
+    ell=ellb,
+    EE_100_cross_s=EE_100_raw_cross_b,
+    EE_143_cross_s=EE_143_raw_cross_b,
+    EE_217_cross_s=EE_217_raw_cross_b,
+)
