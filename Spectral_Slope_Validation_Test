@@ -1,0 +1,65 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+data = np.load('/content/drive/MyDrive/LOAD_DATA.npz')
+ellb = data['ell']
+EE_SMICA = data['EE_SMICA_s']
+data1 = np.load('/content/drive/MyDrive/HM_EE.npz')
+EE_method = data1['EE_ILC_final_HM']
+
+# Final Graph
+
+ELL_MIN, ELL_MAX = 30, 1500
+m = (ellb2 >= ELL_MIN) & (ellb2 <= ELL_MAX)
+
+plt.figure()
+plt.plot(ellb2[m], EE_method2[m], label="EE_method")
+plt.plot(ellb2[m], EE_SMICA2[m], label="EE_SMICA")
+plt.xlabel("ell")
+plt.yscale('log')
+plt.ylabel("EE")
+plt.legend()
+plt.show() 
+
+def local_slope_loglog(ell, C, delta_bins=2):
+    ell = np.asarray(ell)
+    C = np.asarray(C)
+
+    # avoid log of nonpositive values
+    C_safe = np.where(C > 0, C, np.nan)
+
+    logell = np.log(ell)
+    logC   = np.log(C_safe)
+
+    s = np.full_like(C, np.nan, dtype=float)
+    d = int(delta_bins)
+
+    # central difference in log-log space
+    s[d:-d] = (logC[d*2:] - logC[:-d*2]) / (logell[d*2:] - logell[:-d*2])
+    return s
+
+slope_method = local_slope_loglog(ellb2, EE_method2, delta_bins=2)
+slope_smica  = local_slope_loglog(ellb2, EE_SMICA2,  delta_bins=2)
+
+print("finite slope_method fraction:", np.isfinite(slope_method).mean())
+print("finite slope_smica fraction :", np.isfinite(slope_smica).mean())
+
+good = m & np.isfinite(slope_method) & np.isfinite(slope_smica)
+
+plt.figure()
+plt.plot(ellb2[good], slope_method[good], label="slope_method")
+plt.plot(ellb2[good], slope_smica[good],  label="slope_SMICA")
+plt.xlabel("ell")
+plt.ylabel("d log EE / d log ell")
+plt.legend()
+plt.title("Local spectral slope (ℓ < 400)")
+plt.show()
+
+plt.figure()
+plt.plot(ellb2[good], slope_method[good] - slope_smica[good])
+plt.axhline(0, linestyle="--")
+plt.xlabel("ell")
+plt.ylabel("Δ slope (method − SMICA)")
+plt.title("Slope difference (ℓ < 400)")
+plt.show()
+
