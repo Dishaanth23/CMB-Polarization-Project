@@ -1,0 +1,82 @@
+import numpy as np
+
+data = np.load('/content/drive/MyDrive/EE_HM_raw.npz')
+data1 = np.load('/content/drive/MyDrive/HM_EE.npz')
+data2 = np.load('/content/drive/MyDrive/LOAD_DATA.npz')
+EE_ILC_final_HM = data1['EE_ILC_final_HM']
+EE_SMICA = data2['EE_SMICA_s']
+
+EE_ILC_raw_HM = data['EE_ILC_raw_HM']
+ellb = data1['ellb']
+
+
+import pandas as pd
+
+
+EE_base  = np.asarray(EE_SMICA, dtype=float)     
+EE_clean = np.asarray(EE_ILC_final_HM, dtype=float)   
+ell      = np.asarray(ellb, dtype=float)
+
+N = min(len(EE_base), len(EE_clean), len(ell))
+EE_base, EE_clean, ell = EE_base[:N], EE_clean[:N], ell[:N]
+
+def rms(x):
+    return float(np.sqrt(np.mean(x**2)))
+
+def weighted_mean(y, lmin, lmax):
+    use = (ell >= lmin) & (ell <= lmax)
+    if np.sum(use) < 5:
+        return np.nan
+    w = (2*ell[use] + 1.0)
+    return float(np.sum(w * y[use]) / np.sum(w))
+
+def high_ell_scatter(y, lmin, lmax):
+    """
+    Noise-like wiggle metric: RMS of successive differences in an ℓ range.
+    This is robust and does NOT blow up near zero like MAPE.
+    """
+    use = (ell >= lmin) & (ell <= lmax)
+    if np.sum(use) < 6:
+        return np.nan
+    yy = y[use]
+    d = np.diff(yy)
+    return float(np.sqrt(np.mean(d**2)))
+
+
+ranges = [ (300, 800),  (800, 1500)]
+
+rows = []
+for lmin, lmax in ranges:
+    use = (ell >= lmin) & (ell <= lmax)
+    if np.sum(use) < 5:
+        continue
+
+    Ab = weighted_mean(EE_base,  lmin, lmax)
+    Ac = weighted_mean(EE_clean, lmin, lmax)
+    bandpower_reduction = 100.0 * (1.0 - (Ac / Ab)) if np.isfinite(Ab) and Ab != 0 else np.nan
+
+    Sb = high_ell_scatter(EE_base,  lmin, lmax)
+    Sc = high_ell_scatter(EE_clean, lmin, lmax)
+    scatter_reduction = 100.0 * (1.0 - (Sc / Sb)) if np.isfinite(Sb) and Sb != 0 else np.nan
+
+    diff_rms = rms((EE_clean - EE_base)[use])
+
+    rows.append({
+        "ℓ min": lmin,
+        "ℓ max": lmax,
+        "N bins": int(np.sum(use)),
+        "Bandpower(base)": Ab,
+        "Bandpower(clean)": Ac,
+        "Bandpower reduction % (clean vs base)": bandpower_reduction,
+        "Scatter(base)": Sb,
+        "Scatter(clean)": Sc,
+        "Scatter reduction % (clean vs base)": scatter_reduction,
+        "RMS(clean - base) effect size": diff_rms
+    })
+
+df = pd.DataFrame(rows)
+display(df)
+
+print("\nHow to use this:")
+print("- If 'Scatter reduction %' is positive (especially at high ℓ), that's strong evidence you removed noise-like fluctuations.")
+print("- If 'Bandpower reduction %' is positive at low ℓ, it's consistent with reducing foreground residual power (but don’t label it 'dust' without a template).")
