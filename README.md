@@ -22,3 +22,5 @@ Author: Dishaanth Shanmugam
 Resources:-
 Data was colleged from Planck Legacy Archives Public Release 3
 Python Libraries used: matplotlib.pyplot, healpy, numpy, and TensorFlow
+
+This code supports the research note that was recently submitted to the Research Notes of AAS
