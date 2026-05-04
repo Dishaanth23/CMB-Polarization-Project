@@ -17,4 +17,8 @@ results of the proposed method showed a significant reduction in noise contamina
 measured by a 57% reduction in scatter compared to SMICA, the European Space Agency’s cleaning
 product.
 
-Author- Dishaanth Shanmugam
+Author: Dishaanth Shanmugam
+
+Resources:-
+Data was colleged from Planck Legacy Archives Public Release 3
+Python Libraries used: matplotlib.pyplot, healpy, numpy, and TensorFlow
