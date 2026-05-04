@@ -31,10 +31,7 @@ def weighted_mean(y, lmin, lmax):
     return float(np.sum(w * y[use]) / np.sum(w))
 
 def high_ell_scatter(y, lmin, lmax):
-    """
-    Noise-like wiggle metric: RMS of successive differences in an ℓ range.
-    This is robust and does NOT blow up near zero like MAPE.
-    """
+    
     use = (ell >= lmin) & (ell <= lmax)
     if np.sum(use) < 6:
         return np.nan
@@ -77,6 +74,3 @@ for lmin, lmax in ranges:
 df = pd.DataFrame(rows)
 display(df)
 
-print("\nHow to use this:")
-print("- If 'Scatter reduction %' is positive (especially at high ℓ), that's strong evidence you removed noise-like fluctuations.")
-print("- If 'Bandpower reduction %' is positive at low ℓ, it's consistent with reducing foreground residual power (but don’t label it 'dust' without a template).")
