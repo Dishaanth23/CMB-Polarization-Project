@@ -81,10 +81,6 @@ val_loader   = DataLoader(TensorDataset(Xva), batch_size=256, shuffle=False)
 
 
 def corrupt(x, noise_std=0.10, drop_prob=0.05, channel_drop_prob=0.10, W=11):
-    """
-    x: tensor of shape (B, 3*W)
-    Adds noise + random feature dropout + optional whole-channel dropout.
-    """
     x_noisy = x.clone()
 
 
@@ -270,7 +266,6 @@ print("Done.")
 print("Shapes:", EE_100_denoised_b.shape, EE_143_denoised_b.shape, EE_217_denoised_b.shape)
 print("Range check (ell):", ellb[use][0], "to", ellb[use][-1])
 
-import matplotlib.pyplot as plt
 
 ELL_MIN = 30
 ELL_MAX = 1200  
@@ -290,10 +285,7 @@ X_den = np.vstack([
 
 
 def ilc_weights(X):
-    """
-    X: (N, C) matrix of C channels over N ell-bins.
-    Returns weights w (C,) minimizing variance with constraint sum(w)=1.
-    """
+  
 
     R = np.cov(X, rowvar=False)
 
