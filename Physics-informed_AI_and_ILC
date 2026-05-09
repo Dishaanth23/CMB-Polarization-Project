@@ -69,7 +69,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 import os, random
 import numpy as np
-import torch
+
 
 
 Xtr = torch.tensor(X_train, dtype=torch.float32)
@@ -262,7 +262,7 @@ EE_100_denoised_b[use] = D100_d
 EE_143_denoised_b[use] = D143_d
 EE_217_denoised_b[use] = D217_d
 
-print("Done.")
+
 print("Shapes:", EE_100_denoised_b.shape, EE_143_denoised_b.shape, EE_217_denoised_b.shape)
 print("Range check (ell):", ellb[use][0], "to", ellb[use][-1])
 
